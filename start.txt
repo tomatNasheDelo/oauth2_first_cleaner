@@ -1,0 +1,119 @@
+OAuth2 GitHub REST API demo — подробная инструкция
+==================================================
+
+Что изучаем
+-----------
+
+Приложение использует Spring Security OAuth2 Client для OAuth 2.0 Authorization Code flow. Нет Thymeleaf, отдельного frontend и базы данных. HTTP-сессия связывает браузер с авторизованным пользователем; профиль выдаётся REST endpoint-ом в JSON.
+
+Состав проекта
+--------------
+
+- `build.gradle.kts` — Java 17, Spring Boot Web, Security, OAuth2 Client, Spring Security Test.
+- `OAuth2RestDemoApplication.java` — запуск приложения.
+- `SecurityConfiguration.java` — правила доступа, OAuth2 login, JSON success/failure handlers, logout и CSRF.
+- `OAuth2ApiController.java` — URL начала авторизации и REST-профиль `/api/me`.
+- `CsrfController.java` — выдаёт CSRF header name/token для безопасного POST logout.
+- `application.yml` — OAuth registration; credentials читаются из environment.
+- `OAuth2ApiIntegrationTest.java` — проверяет публичную выдачу login URL и CSRF token с поднятым Spring context.
+
+GitHub OAuth App создать здесь
+------------------------------
+
+GitHub → Settings → Developer settings → OAuth Apps → New OAuth App:
+
+- Application name: OAuth2 REST Learning Demo
+- Homepage URL: `http://localhost:8080`
+- Authorization callback URL: `http://localhost:8080/login/oauth2/code/github`
+
+После создания скопируй Client ID и создай Client Secret. Никогда не коммить настоящие значения в репозиторий.
+
+Переменные окружения и запуск
+-----------------------------
+
+Linux/macOS (в одном терминале):
+
+```bash
+export GITHUB_CLIENT_ID='your-client-id'
+export GITHUB_CLIENT_SECRET='your-client-secret'
+gradle bootRun
+```
+
+PowerShell:
+
+```powershell
+$env:GITHUB_CLIENT_ID = "your-client-id"
+$env:GITHUB_CLIENT_SECRET = "your-client-secret"
+gradle bootRun
+```
+
+Открой в браузере:
+
+```text
+http://localhost:8080/oauth2/authorization/github
+```
+
+Войди в GitHub и подтверди доступ. В callback Spring обменяет authorization code на access token сервер-сервер и вернёт JSON `{ "message": "OAuth2 login successful", "profileUrl": "/api/me" }`. Браузер сохраняет JSESSIONID cookie.
+
+Пройти API после браузерного входа
+---------------------------------
+
+В той же браузерной сессии открой `http://localhost:8080/api/me`, чтобы увидеть JSON профиля. `curl` сам не разделяет cookie с браузером; если нужно проверить API через curl, сделай OAuth flow клиентом, сохраняющим cookies, либо используй Cookie из своей dev-сессии локально (никогда не публикуй session cookie).
+
+Endpoints:
+
+```text
+GET  /api/auth/login-url    публичный JSON с authorization URL
+GET  /oauth2/authorization/github    начало redirect flow
+GET  /login/oauth2/code/github      callback GitHub
+GET  /api/me                         профиль текущей сессии
+GET  /api/csrf                       CSRF header name и token
+POST /api/logout                     logout (CSRF обязателен)
+```
+
+Пример logout через curl, если cookie jar уже содержит аутентифицированную сессию:
+
+```bash
+curl -c cookies.txt -b cookies.txt http://localhost:8080/api/csrf
+# Скопируй token из JSON-ответа и подставь его вместо TOKEN:
+curl -i -c cookies.txt -b cookies.txt -X POST http://localhost:8080/api/logout \
+  -H 'X-XSRF-TOKEN: TOKEN'
+```
+
+Внимание: не сохраняй/не отправляй cookies или токены третьим лицам и удали локальный cookies.txt после эксперимента.
+
+Как устроен Authorization Code flow
+-----------------------------------
+
+1. Браузер открывает `/oauth2/authorization/github`.
+2. Spring создаёт `state`, сохраняет OAuth authorization request в сессии и перенаправляет браузер на GitHub.
+3. GitHub возвращает одноразовый authorization code на зарегистрированный callback URL.
+4. Spring сравнивает `state` и обменивает code на access token по серверному каналу.
+5. Spring вызывает GitHub API `https://api.github.com/user` с токеном и создаёт аутентифицированную сессию.
+6. `/api/me` сериализует разрешённые поля профиля. Токен не выдаётся клиенту.
+
+Scopes: только `read:user`. OAuth 2.0 — делегирование доступа, а не стандарт идентификации пользователя (OIDC решает задачу identity).
+
+Тесты
+-----
+
+```bash
+gradle test
+```
+
+Запуск конкретного интеграционного теста:
+
+```bash
+gradle test --tests 'ru.demo.oauth2.OAuth2ApiIntegrationTest'
+```
+
+Тесты не обращаются к GitHub: credentials-заглушки нужны только для сборки конфигурации, реальные OAuth операции выполняются при ручном запуске.
+
+Безопасность и диагностика
+--------------------------
+
+- `redirect_uri_mismatch`: callback URL в GitHub должен точно совпасть с `http://localhost:8080/login/oauth2/code/github`.
+- `invalid_client`: проверь Client ID/Secret в активной shell-сессии и перезапусти приложение.
+- Client secret и session cookie — секреты; не коммить их и не вставляй в публичные логи.
+- CSRF включён. Для POST `/api/logout` передай token, полученный с `/api/csrf`, в `X-XSRF-TOKEN` и отправляй cookie той же сессии.
+- Пример предназначен для localhost. Для production нужны HTTPS, управление секретами, cookie/security headers, защита API и ревью настроек CSRF.
